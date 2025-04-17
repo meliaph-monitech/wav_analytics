@@ -68,7 +68,7 @@ if uploaded_zip:
                     ))
 
                     # Frequency Domain (dB vs Frequency)
-                    freqs, psd = welch(data, fs=samplerate, nperseg=1024)
+                    freqs, psd = welch(data, fs=samplerate, nperseg=2048)
                     db = 10 * np.log10(psd + 1e-12)  # avoid log(0)
                     freq_mask = (freqs >= min_freq) & (freqs <= max_freq)
 
