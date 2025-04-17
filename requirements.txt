@@ -2,5 +2,5 @@ streamlit
 numpy
 pandas
 plotly
-librosa
+scipy
 scikit-learn
