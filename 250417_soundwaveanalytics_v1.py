@@ -29,7 +29,7 @@ if uploaded_zip:
             with col1:
                 min_freq = st.number_input("Min Frequency (Hz)", value=0)
             with col2:
-                max_freq = st.number_input("Max Frequency (Hz)", value=8000)
+                max_freq = st.number_input("Max Frequency (Hz)", value=100000)
             with col3:
                 min_db = st.number_input("Min dB", value=-100)
             with col4:
