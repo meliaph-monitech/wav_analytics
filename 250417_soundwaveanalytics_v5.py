@@ -20,9 +20,10 @@ with st.sidebar:
     interval_ms = st.slider("Time Interval (ms)", 1, 100, 10)
     freq_min = st.number_input("Min Frequency (Hz)", value=0)
     freq_max = st.number_input("Max Frequency (Hz)", value=22050)
-    db_min = st.number_input("Min dB", value=0)
-    db_max = st.number_input("Max dB", value=60)
+    db_min = st.number_input("Min dB", value=-100)
+    db_max = st.number_input("Max dB", value=0)
     cluster_k = st.slider("Number of Clusters (KMeans)", 2, 10, 3)
+    category_filter = st.multiselect("Filter by Category (OK, GAP, POWER)", ["OK", "GAP", "POWER"], default=["OK", "GAP", "POWER"])
 
 # Temp directory to extract
 if zip_file:
@@ -33,14 +34,16 @@ if zip_file:
         wav_files = [f for f in os.listdir(tmpdir) if f.endswith(".wav")]
         wav_files.sort()
 
-        selected_files = st.sidebar.multiselect("Select WAV files to display", wav_files, default=wav_files)
-
         all_time_data = {}
         all_fft_data = {}
         all_features = []
         labels = []
+        file_names = []
 
-        for fname in selected_files:
+        for fname in wav_files:
+            label = fname.split("_")[-1].replace(".wav", "").upper()
+            if label not in category_filter:
+                continue
             fpath = os.path.join(tmpdir, fname)
             y, sr = librosa.load(fpath, sr=None)
             interval_samples = int((interval_ms / 1000) * sr)
@@ -67,14 +70,14 @@ if zip_file:
             feature_vector = [band_1, band_2, band_3, band_4, centroid, bandwidth, flatness, rms]
             all_features.append(feature_vector)
 
-            label = fname.split("_")[-1].replace(".wav", "").upper()
             labels.append(label)
+            file_names.append(fname)
 
         # Plot time domain
         fig_time = go.Figure()
         for fname, (t, s) in all_time_data.items():
             label = fname.split("_")[-1].replace(".wav", "").upper()
-            fig_time.add_trace(go.Scatter(x=t, y=s, mode='lines', name=label + ' | ' + fname))
+            fig_time.add_trace(go.Scatter(x=t, y=s, mode='lines', name=label, legendgroup=label))
         fig_time.update_layout(title="Time Domain (Waveform)", xaxis_title="Time (s)", yaxis_title="Amplitude")
         st.plotly_chart(fig_time, use_container_width=True)
 
@@ -83,33 +86,49 @@ if zip_file:
         for fname, (freqs, fft_db) in all_fft_data.items():
             mask = (freqs >= freq_min) & (freqs <= freq_max)
             label = fname.split("_")[-1].replace(".wav", "").upper()
-            fig_fft.add_trace(go.Scatter(x=freqs[mask], y=fft_db[mask], fill='tozeroy', mode='lines', name=label + ' | ' + fname))
-        fig_fft.update_layout(title="Frequency Domain (FFT dB)", xaxis_title="Frequency (Hz)", yaxis_title="dB",
-                              yaxis_range=[db_min, db_max])
+            fig_fft.add_trace(go.Scatter(x=freqs[mask], y=fft_db[mask], fill='tozeroy', mode='lines', name=label, legendgroup=label))
+        fig_fft.update_layout(title="Frequency Domain (FFT dB)", xaxis_title="Frequency (Hz)", yaxis_title="dB", yaxis_range=[db_min, db_max])
         st.plotly_chart(fig_fft, use_container_width=True)
 
-        # Feature matrix and clustering
+        # Radar + Bar chart
         feature_df = pd.DataFrame(all_features, columns=[
             'band_0_5k', 'band_5k_10k', 'band_15k_20k', 'band_20k_up',
             'centroid', 'bandwidth', 'flatness', 'rms'])
         feature_df['label'] = labels
-        feature_df['filename'] = selected_files
+        feature_df['filename'] = file_names
 
+        avg_features = feature_df.groupby('label').mean()
+        categories = avg_features.columns.tolist()
+
+        fig_radar = go.Figure()
+        for label in avg_features.index:
+            fig_radar.add_trace(go.Scatterpolar(
+                r=avg_features.loc[label].values,
+                theta=categories,
+                fill='toself',
+                name=label
+            ))
+        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True)), title="Radar Plot of Average Features")
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+        fig_bar = go.Figure()
+        for label in avg_features.index:
+            fig_bar.add_trace(go.Bar(x=categories, y=avg_features.loc[label].values, name=label))
+        fig_bar.update_layout(barmode='group', title="Band Energy Bar Chart")
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # PCA + KMeans
         pca = PCA(n_components=2)
         features_2d = pca.fit_transform(feature_df.drop(columns=['label', 'filename']))
-
         kmeans = KMeans(n_clusters=cluster_k, random_state=42)
-        cluster_labels = kmeans.fit_predict(features_2d)
-        feature_df['cluster'] = cluster_labels
+        clusters = kmeans.fit_predict(features_2d)
+        feature_df['PC1'] = features_2d[:, 0]
+        feature_df['PC2'] = features_2d[:, 1]
+        feature_df['cluster'] = clusters
 
         fig_pca = px.scatter(
-            x=features_2d[:, 0], y=features_2d[:, 1],
-            color=feature_df['cluster'].astype(str),
-            symbol=feature_df['label'],
-            hover_data={'filename': feature_df['filename'], 'label': feature_df['label']},
-            title="PCA Scatter with KMeans Clustering"
-        )
-        fig_pca.update_layout(xaxis_title="PC1", yaxis_title="PC2")
+            feature_df, x='PC1', y='PC2', color=feature_df['label'], symbol=feature_df['cluster'].astype(str),
+            hover_data=['filename'], title="PCA Scatter with Cluster Overlay")
         st.plotly_chart(fig_pca, use_container_width=True)
 
         # Download processed time data
