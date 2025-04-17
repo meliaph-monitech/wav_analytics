@@ -7,46 +7,43 @@ import pandas as pd
 import plotly.graph_objs as go
 from scipy.io import wavfile
 from scipy.signal import welch, find_peaks
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.decomposition import PCA
 from tempfile import TemporaryDirectory
+from scipy.interpolate import interp1d
 
-# Page settings
 st.set_page_config(layout="wide")
-st.title("🎧 Welding Sound Classification App")
+st.title("🎧 Welding Sound Classification Explorer")
 
-# --- Global Settings ---
-label_colors = {
-    "OK": "green",
-    "ALU_GAP": "orange",
-    "ALU_POWER": "red",
-    "CU_GAP": "blue",
-    "CU_POWER": "purple"
-}
+# -- Sidebar Configs --
+normalize = st.sidebar.checkbox("☑️ Normalize Amplitude and Features", value=True)
+
+train_zip = st.sidebar.file_uploader("Upload TRAINING ZIP (Folders = Labels)", type="zip")
+test_zip = st.sidebar.file_uploader("Upload TEST ZIP (WAV files only)", type="zip")
+
+interval_ms = st.sidebar.slider("Downsampling Interval (ms)", 1, 100, 10)
+min_freq = st.sidebar.number_input("Min Frequency (Hz)", value=0)
+max_freq = st.sidebar.number_input("Max Frequency (Hz)", value=20000)
+min_db = st.sidebar.number_input("Min dB", value=-100)
+max_db = st.sidebar.number_input("Max dB", value=0)
 
 bands = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
+band_labels = [f"{lo//1000}-{hi//1000}kHz" for lo, hi in bands]
+uniform_freqs = np.linspace(min_freq, max_freq, 200)
 
-# --- Helper Functions ---
+label_colors = {
+    "All_OK": "green",
+    "Alu_GAP": "orange",
+    "Alu_POWER": "red",
+    "Cu_GAP": "blue",
+    "Cu_POWER": "purple",
+    "UNKNOWN": "gray"
+}
 
-def extract_label_from_train_path(path):
-    parts = path.strip("/").split("/")
-    if len(parts) > 1:
-        return parts[-2].replace("ALL_", "OK").upper()
-    return "UNKNOWN"
-
-def downsample_waveform(data, samplerate):
-    window_size = int(samplerate * 0.01)
-    trimmed_len = len(data) - len(data) % window_size
-    reshaped = data[:trimmed_len].reshape(-1, window_size)
-    return reshaped.mean(axis=1)
 
 def extract_band_energy(freqs, psd):
-    # Ensure freqs and psd are the same length
     min_len = min(len(freqs), len(psd))
     freqs = freqs[:min_len]
     psd = psd[:min_len]
-
     band_energies = []
     for low, high in bands:
         band_mask = (freqs >= low) & (freqs < high)
@@ -55,158 +52,170 @@ def extract_band_energy(freqs, psd):
         else:
             psd_band = psd[band_mask]
             band_energies.append(np.mean(psd_band))
-    return band_energies
+    band_energies = np.array(band_energies)
+    if normalize and np.sum(band_energies) > 0:
+        band_energies = band_energies / np.sum(band_energies)
+    return band_energies.tolist()
 
 
-def process_zip_file(zip_file, is_training=True):
-    waveform_fig = go.Figure()
-    freq_fig = go.Figure()
-    bar_fig = go.Figure()
-    radar_fig = go.Figure()
-    fft_peak_hist = []
+def process_zip_file(zip_file, is_training):
+    features = []
+    wave_fig = go.Figure()
+    fft_fig = go.Figure()
+    radar_data = []
+    hist_peaks = []
+    pca_vectors = []
+    pca_labels = []
+    file_names = []
 
-    features, labels = [], []
-    test_file_features = []
+    with zipfile.ZipFile(zip_file, "r") as z:
+        wav_paths = [f for f in z.namelist() if f.endswith(".wav")]
 
-    with TemporaryDirectory() as tmpdir:
-        with zipfile.ZipFile(zip_file, "r") as zip_ref:
-            zip_ref.extractall(tmpdir)
+        for path in wav_paths:
+            label = path.split("/")[0] if is_training else "UNKNOWN"
+            filename = os.path.basename(path)
+            color = label_colors.get(label, "gray")
 
-            wav_paths = []
-            if is_training:
-                # Traverse subfolders
-                for root, _, files in os.walk(tmpdir):
-                    for file in files:
-                        if file.endswith(".wav"):
-                            wav_paths.append(os.path.join(root, file))
-            else:
-                # Flat structure
-                wav_paths = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".wav")]
-
-            for path in wav_paths:
-                samplerate, data = wavfile.read(path)
+            with z.open(path) as file:
+                samplerate, data = wavfile.read(io.BytesIO(file.read()))
                 if data.ndim > 1:
                     data = data.mean(axis=1)
+                if normalize:
+                    data = data / (np.max(np.abs(data)) + 1e-8)
 
-                label = extract_label_from_train_path(path) if is_training else None
-                color = label_colors.get(label, "black") if label else "black"
-                line_dash = "solid" if is_training else "dash"
+                # --- Time-Domain ---
+                window = int(samplerate * interval_ms / 1000)
+                trim = len(data) - len(data) % window
+                avg = data[:trim].reshape(-1, window).mean(axis=1)
+                time_axis = np.arange(len(avg)) * interval_ms
 
-                # --- Time-Domain Plot ---
-                waveform = downsample_waveform(data, samplerate)
-                time_axis = np.arange(len(waveform)) * 10  # ms
-                waveform_fig.add_trace(go.Scatter(
-                    x=time_axis, y=waveform,
-                    mode="lines", name=os.path.basename(path),
-                    line=dict(color=color, dash=line_dash)
-                ))
+                wave_fig.add_trace(go.Scatter(x=time_axis, y=avg, mode="lines",
+                                              name=f"{filename} ({label})", line=dict(color=color)))
 
-                # --- Frequency-Domain ---
+                # --- FFT / Welch ---
                 freqs, psd = welch(data, fs=samplerate, nperseg=2048)
                 db = 10 * np.log10(psd + 1e-12)
-                mask = (freqs >= 0) & (freqs <= 20000)
-                freqs, db = freqs[mask], db[mask]
+                mask = (freqs >= min_freq) & (freqs <= max_freq)
+                freqs_masked, db_masked = freqs[mask], db[mask]
 
-                freq_fig.add_trace(go.Scatter(
-                    x=freqs, y=db,
-                    mode="lines", name=os.path.basename(path),
-                    line=dict(color=color, dash=line_dash),
-                    fill='tozeroy'
+                fft_fig.add_trace(go.Scatter(
+                    x=freqs_masked, y=np.clip(db_masked, min_db, max_db),
+                    mode="lines", fill="tozeroy", name=f"{filename} ({label})",
+                    line=dict(color=color)
                 ))
 
                 # --- Band Energy ---
-                energy = extract_band_energy(freqs, psd)
-                band_labels = [f"{low//1000}-{high//1000}kHz" for low, high in bands]
+                band_energy = extract_band_energy(freqs, psd)
+                radar_data.append((filename, label, band_energy))
 
-                bar_fig.add_trace(go.Bar(
-                    x=band_labels, y=energy,
-                    name=os.path.basename(path),
-                    marker_color=color
-                ))
-
-                radar_fig.add_trace(go.Scatterpolar(
-                    r=energy + [energy[0]],
-                    theta=band_labels + [band_labels[0]],
-                    fill='toself',
-                    name=os.path.basename(path),
-                    line=dict(color=color, dash=line_dash)
-                ))
-
-                # --- FFT Peak Histogram ---
+                # --- FFT Peaks ---
                 peaks, _ = find_peaks(db, height=np.max(db) - 10)
-                fft_peak_hist.extend(freqs[peaks])
+                peak_freqs = freqs[peaks]
+                hist_peaks.extend(peak_freqs)
 
-                if is_training:
-                    features.append(energy)
-                    labels.append(label)
-                else:
-                    test_file_features.append((os.path.basename(path), energy))
+                # --- PCA Vector ---
+                if len(freqs_masked) >= 2:
+                    interp = interp1d(freqs_masked, db_masked, bounds_error=False, fill_value="extrapolate")
+                    interpolated = interp(uniform_freqs)
+                    if normalize:
+                        interpolated = (interpolated - interpolated.mean()) / (interpolated.std() + 1e-8)
+                    pca_vectors.append(interpolated)
+                    pca_labels.append(label)
+                    file_names.append(filename)
 
     return {
-        "waveform_fig": waveform_fig,
-        "freq_fig": freq_fig,
-        "bar_fig": bar_fig,
-        "radar_fig": radar_fig,
-        "fft_peak_freqs": fft_peak_hist,
-        "features": features,
-        "labels": labels,
-        "test_features": test_file_features
+        "waveform": wave_fig,
+        "fft": fft_fig,
+        "radar": radar_data,
+        "hist": hist_peaks,
+        "pca": (pca_vectors, pca_labels, file_names)
     }
 
-# --- Streamlit Layout ---
 
-st.sidebar.header("📥 Upload Files")
-train_zip = st.sidebar.file_uploader("Upload Training ZIP", type="zip", key="train_zip")
-test_zip = st.sidebar.file_uploader("Upload Test ZIP", type="zip", key="test_zip")
-
-# --- Training Phase ---
+# --- TRAINING SECTION ---
 if train_zip:
-    st.header("🔧 Training Data Visualizations")
+    st.subheader("📘 Training Data Visualizations")
     train_data = process_zip_file(train_zip, is_training=True)
 
-    st.subheader("📈 Waveform")
-    st.plotly_chart(train_data["waveform_fig"], use_container_width=True)
+    st.markdown("### 📈 Time-Domain Signal")
+    st.plotly_chart(train_data["waveform"], use_container_width=True)
 
-    st.subheader("🔊 Spectrum")
-    st.plotly_chart(train_data["freq_fig"], use_container_width=True)
+    st.markdown("### 🔊 Frequency-Domain Spectrum")
+    train_data["fft"].update_layout(xaxis_title="Frequency (Hz)", yaxis_title="dB")
+    st.plotly_chart(train_data["fft"], use_container_width=True)
 
-    st.subheader("📊 Band Energy - Bar")
-    st.plotly_chart(train_data["bar_fig"], use_container_width=True)
+    st.markdown("### 📊 Band Energy (Radar & Bar)")
+    radar_fig = go.Figure()
+    bar_fig = go.Figure()
+    for filename, label, energies in train_data["radar"]:
+        radar_fig.add_trace(go.Scatterpolar(
+            r=energies + [energies[0]],
+            theta=band_labels + [band_labels[0]],
+            fill="toself", name=f"{filename} ({label})",
+            line=dict(color=label_colors.get(label, "gray"))
+        ))
+        bar_fig.add_trace(go.Bar(
+            x=band_labels, y=energies,
+            name=f"{filename} ({label})", marker_color=label_colors.get(label, "gray")
+        ))
+    radar_fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True)
+    bar_fig.update_layout(barmode="group", xaxis_title="Band", yaxis_title="Energy")
+    st.plotly_chart(bar_fig, use_container_width=True)
+    st.plotly_chart(radar_fig, use_container_width=True)
 
-    st.subheader("🧭 Band Energy - Radar")
-    st.plotly_chart(train_data["radar_fig"], use_container_width=True)
+    st.markdown("### 📌 Histogram of FFT Peak Frequencies")
+    hist_fig = go.Figure()
+    hist_fig.add_trace(go.Histogram(x=train_data["hist"], nbinsx=50))
+    hist_fig.update_layout(xaxis_title="Frequency (Hz)", yaxis_title="Count")
+    st.plotly_chart(hist_fig, use_container_width=True)
 
-    st.subheader("📉 Histogram of FFT Peak Frequencies")
-    st.plotly_chart(go.Figure([go.Histogram(x=train_data["fft_peak_freqs"], nbinsx=50)]), use_container_width=True)
+    st.markdown("### 📉 PCA Projection of FFT Vectors")
+    try:
+        pca = PCA(n_components=2)
+        reduced = pca.fit_transform(np.array(train_data["pca"][0]))
+        pca_fig = go.Figure()
+        for i, label in enumerate(train_data["pca"][1]):
+            pca_fig.add_trace(go.Scatter(
+                x=[reduced[i, 0]], y=[reduced[i, 1]],
+                mode="markers+text", text=[train_data["pca"][2][i]],
+                name=label, marker=dict(color=label_colors.get(label, "gray"), size=10),
+                textposition="top center"
+            ))
+        pca_fig.update_layout(xaxis_title="PC1", yaxis_title="PC2")
+        st.plotly_chart(pca_fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"PCA error: {e}")
 
-    st.subheader("🤖 Training Classifier")
-    X_train, X_test, y_train, y_test = train_test_split(train_data["features"], train_data["labels"], test_size=0.2, stratify=train_data["labels"], random_state=42)
-    model = RandomForestClassifier(random_state=42)
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    st.text(classification_report(y_test, y_pred))
+# --- TEST SECTION ---
+if test_zip:
+    st.subheader("🧪 Test Data Visualizations")
+    test_data = process_zip_file(test_zip, is_training=False)
 
-    # --- Test Phase ---
-    if test_zip:
-        st.header("🧪 Test Data & Predictions")
-        test_data = process_zip_file(test_zip, is_training=False)
+    st.markdown("### 📈 Time-Domain Signal")
+    st.plotly_chart(test_data["waveform"], use_container_width=True)
 
-        for filename, feature in test_data["test_features"]:
-            prediction = model.predict([feature])[0]
-            st.success(f"✅ **{filename}** → Predicted as **{prediction}**")
+    st.markdown("### 🔊 Frequency-Domain Spectrum")
+    test_data["fft"].update_layout(xaxis_title="Frequency (Hz)", yaxis_title="dB")
+    st.plotly_chart(test_data["fft"], use_container_width=True)
 
-        # Add test plots
-        for trace in test_data["waveform_fig"].data:
-            train_data["waveform_fig"].add_trace(trace)
-        st.subheader("📈 Waveform (with Test)")
-        st.plotly_chart(train_data["waveform_fig"], use_container_width=True)
+    st.markdown("### 📊 Band Energy (Radar & Bar)")
+    radar_fig = go.Figure()
+    bar_fig = go.Figure()
+    for filename, label, energies in test_data["radar"]:
+        radar_fig.add_trace(go.Scatterpolar(
+            r=energies + [energies[0]],
+            theta=band_labels + [band_labels[0]],
+            fill="toself", name=filename,
+            line=dict(color="gray")
+        ))
+        bar_fig.add_trace(go.Bar(x=band_labels, y=energies, name=filename, marker_color="gray"))
+    radar_fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True)
+    bar_fig.update_layout(barmode="group", xaxis_title="Band", yaxis_title="Energy")
+    st.plotly_chart(bar_fig, use_container_width=True)
+    st.plotly_chart(radar_fig, use_container_width=True)
 
-        for trace in test_data["freq_fig"].data:
-            train_data["freq_fig"].add_trace(trace)
-        st.subheader("🔊 Spectrum (with Test)")
-        st.plotly_chart(train_data["freq_fig"], use_container_width=True)
-
-        for trace in test_data["radar_fig"].data:
-            train_data["radar_fig"].add_trace(trace)
-        st.subheader("🧭 Radar Energy (with Test)")
-        st.plotly_chart(train_data["radar_fig"], use_container_width=True)
+    st.markdown("### 📌 Histogram of FFT Peak Frequencies")
+    hist_fig = go.Figure()
+    hist_fig.add_trace(go.Histogram(x=test_data["hist"], nbinsx=50))
+    hist_fig.update_layout(xaxis_title="Frequency (Hz)", yaxis_title="Count")
+    st.plotly_chart(hist_fig, use_container_width=True)
