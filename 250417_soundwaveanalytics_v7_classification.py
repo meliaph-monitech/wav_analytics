@@ -21,7 +21,7 @@ st.title("🔊 Welding Sound Classification App")
 st.sidebar.header("Upload ZIP Files")
 train_zip = st.sidebar.file_uploader("📁 Training ZIP (folders as labels)", type="zip")
 test_zip = st.sidebar.file_uploader("🧪 Test ZIP (WAV files only)", type="zip")
-normalize = st.sidebar.checkbox("☑️ Normalize Amplitude and Features", value=True)
+# normalize = st.sidebar.checkbox("☑️ Normalize Amplitude and Features", value=False)
 
 # --- Constants ---
 BANDS = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
