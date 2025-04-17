@@ -11,7 +11,7 @@ from sklearn.decomposition import PCA
 from tempfile import TemporaryDirectory
 
 st.set_page_config(layout="wide")
-st.title("🎧 Welding Sound Analyzer with Label-Based Insights")
+st.title("🎧 Welding Sound Analyzer with Label Filtering")
 
 uploaded_zip = st.file_uploader("Upload a ZIP file containing WAV files", type="zip")
 
@@ -31,6 +31,8 @@ if uploaded_zip:
             st.warning("No .wav files found.")
         else:
             selected_files = st.multiselect("Select WAV files to analyze", wav_files)
+            available_labels = sorted(set(extract_label(f) for f in selected_files))
+            selected_labels = st.multiselect("Filter by Label", options=available_labels, default=available_labels)
 
             interval_ms = st.slider("Sampling interval (ms)", 1, 100, 10)
 
@@ -52,6 +54,9 @@ if uploaded_zip:
 
             for file in selected_files:
                 label = extract_label(file)
+                if label not in selected_labels:
+                    continue
+
                 color = label_colors.get(label, "gray")
 
                 with zip_ref.open(file) as wav_file:
@@ -84,28 +89,27 @@ if uploaded_zip:
                         line=dict(color=color)
                     ))
 
-                    # --- Spectrogram ---
-                    st.subheader(f"🎨 Spectrogram - {file} ({label})")
-                    f, t, Sxx = spectrogram(data, fs=samplerate, nperseg=1024, noverlap=512)
-                    Sxx_dB = 10 * np.log10(Sxx + 1e-10)
-                    f_mask = (f >= min_freq) & (f <= max_freq)
-
-                    st.plotly_chart(go.Figure(
-                        data=go.Heatmap(
-                            z=Sxx_dB[f_mask],
-                            x=t,
-                            y=f[f_mask],
-                            colorscale="Viridis",
-                            zmin=min_db,
-                            zmax=max_db,
-                            colorbar=dict(title="dB")),
-                        layout=go.Layout(
-                            title=f"Spectrogram for {file} ({label})",
-                            xaxis_title="Time (s)",
-                            yaxis_title="Frequency (Hz)",
-                            height=400
-                        )
-                    ), use_container_width=True)
+                    # --- Spectrogram (DISABLED) ---
+                    # st.subheader(f"🎨 Spectrogram - {file} ({label})")
+                    # f, t, Sxx = spectrogram(data, fs=samplerate, nperseg=1024, noverlap=512)
+                    # Sxx_dB = 10 * np.log10(Sxx + 1e-10)
+                    # f_mask = (f >= min_freq) & (f <= max_freq)
+                    # st.plotly_chart(go.Figure(
+                    #     data=go.Heatmap(
+                    #         z=Sxx_dB[f_mask],
+                    #         x=t,
+                    #         y=f[f_mask],
+                    #         colorscale="Viridis",
+                    #         zmin=min_db,
+                    #         zmax=max_db,
+                    #         colorbar=dict(title="dB")),
+                    #     layout=go.Layout(
+                    #         title=f"Spectrogram for {file} ({label})",
+                    #         xaxis_title="Time (s)",
+                    #         yaxis_title="Frequency (Hz)",
+                    #         height=400
+                    #     )
+                    # ), use_container_width=True)
 
                     # --- Band Energy ---
                     bands = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
@@ -127,7 +131,7 @@ if uploaded_zip:
                     labels.append(label)
                     file_labels.append(file)
 
-            if selected_files:
+            if selected_files and selected_labels:
                 st.subheader("📈 Time-Domain Signal")
                 st.plotly_chart(waveform_fig, use_container_width=True)
 
@@ -141,21 +145,23 @@ if uploaded_zip:
 
                 bar_fig = go.Figure()
                 for file, label, energies in band_energy_data:
-                    color = label_colors.get(label, "gray")
-                    bar_fig.add_trace(go.Bar(x=band_labels, y=energies, name=f"{file} ({label})", marker_color=color))
+                    if label in selected_labels:
+                        color = label_colors.get(label, "gray")
+                        bar_fig.add_trace(go.Bar(x=band_labels, y=energies, name=f"{file} ({label})", marker_color=color))
                 bar_fig.update_layout(barmode="group", xaxis_title="Frequency Band", yaxis_title="Avg Energy")
                 st.plotly_chart(bar_fig, use_container_width=True)
 
                 radar_fig = go.Figure()
                 for file, label, energies in band_energy_data:
-                    color = label_colors.get(label, "gray")
-                    radar_fig.add_trace(go.Scatterpolar(
-                        r=energies + [energies[0]],
-                        theta=band_labels + [band_labels[0]],
-                        fill='toself',
-                        name=f"{file} ({label})",
-                        line=dict(color=color)
-                    ))
+                    if label in selected_labels:
+                        color = label_colors.get(label, "gray")
+                        radar_fig.add_trace(go.Scatterpolar(
+                            r=energies + [energies[0]],
+                            theta=band_labels + [band_labels[0]],
+                            fill='toself',
+                            name=f"{file} ({label})",
+                            line=dict(color=color)
+                        ))
                 radar_fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True)
                 st.plotly_chart(radar_fig, use_container_width=True)
 
@@ -173,12 +179,13 @@ if uploaded_zip:
                     reduced = pca.fit_transform(np.array(pca_vectors))
                     pca_fig = go.Figure()
                     for i, label in enumerate(labels):
-                        color = label_colors.get(label, "gray")
-                        pca_fig.add_trace(go.Scatter(
-                            x=[reduced[i, 0]], y=[reduced[i, 1]],
-                            mode="markers+text", text=[file_labels[i]], name=label,
-                            textposition="top center", marker=dict(color=color, size=10)
-                        ))
+                        if label in selected_labels:
+                            color = label_colors.get(label, "gray")
+                            pca_fig.add_trace(go.Scatter(
+                                x=[reduced[i, 0]], y=[reduced[i, 1]],
+                                mode="markers+text", text=[file_labels[i]], name=label,
+                                textposition="top center", marker=dict(color=color, size=10)
+                            ))
                     pca_fig.update_layout(xaxis_title="PC1", yaxis_title="PC2")
                     st.plotly_chart(pca_fig, use_container_width=True)
                 except Exception as e:
@@ -186,23 +193,24 @@ if uploaded_zip:
 
                 # --- CSV Downloads ---
                 st.subheader("📥 Download Processed CSVs")
-                if len(selected_files) == 1:
-                    file = selected_files[0]
-                    csv = processed_csvs[file].to_csv(index=False).encode("utf-8")
+                filtered_csvs = {f: df for f, df in processed_csvs.items() if extract_label(f) in selected_labels}
+                if len(filtered_csvs) == 1:
+                    file, df = next(iter(filtered_csvs.items()))
+                    csv = df.to_csv(index=False).encode("utf-8")
                     st.download_button(
                         f"Download CSV for {file}",
                         csv,
                         file_name=f"{os.path.splitext(os.path.basename(file))[0]}.csv",
                         mime="text/csv"
                     )
-                else:
+                elif len(filtered_csvs) > 1:
                     with TemporaryDirectory() as temp_dir:
-                        for file in selected_files:
+                        for file, df in filtered_csvs.items():
                             name = os.path.splitext(os.path.basename(file))[0] + ".csv"
-                            processed_csvs[file].to_csv(os.path.join(temp_dir, name), index=False)
+                            df.to_csv(os.path.join(temp_dir, name), index=False)
                         zip_bytes = io.BytesIO()
                         with zipfile.ZipFile(zip_bytes, "w") as zf:
-                            for file in selected_files:
+                            for file in filtered_csvs:
                                 name = os.path.splitext(os.path.basename(file))[0] + ".csv"
                                 zf.write(os.path.join(temp_dir, name), arcname=name)
                         zip_bytes.seek(0)
