@@ -6,12 +6,14 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
 from scipy.io import wavfile
-from scipy.signal import welch
+from scipy.signal import spectrogram, welch, find_peaks
+from sklearn.decomposition import PCA
 from tempfile import TemporaryDirectory
 
-st.title("📊 WAV Visualizer & Frequency Explorer")
+st.set_page_config(layout="wide")
+st.title("🎧 Welding Sound Analyzer")
 
-uploaded_zip = st.file_uploader("Upload ZIP with WAV files", type="zip")
+uploaded_zip = st.file_uploader("Upload a ZIP file containing WAV files", type="zip")
 
 if uploaded_zip:
     with zipfile.ZipFile(uploaded_zip, "r") as zip_ref:
@@ -20,79 +22,153 @@ if uploaded_zip:
         if not wav_files:
             st.warning("No .wav files found in the uploaded ZIP.")
         else:
-            selected_files = st.multiselect("Select WAV files to visualize", wav_files)
+            selected_files = st.multiselect("Select WAV files to analyze", wav_files)
 
-            interval_ms = st.slider("Select interval (ms)", 1, 100, 10)
+            interval_ms = st.slider("Sampling interval (ms)", 1, 100, 10)
 
-            st.markdown("### Frequency Range Settings (for Spectral View)")
+            st.markdown("### Frequency Visualization Settings")
             col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                min_freq = st.number_input("Min Frequency (Hz)", value=0)
-            with col2:
-                max_freq = st.number_input("Max Frequency (Hz)", value=100000)
-            with col3:
-                min_db = st.number_input("Min dB", value=-100)
-            with col4:
-                max_db = st.number_input("Max dB", value=0)
+            min_freq = col1.number_input("Min Frequency (Hz)", value=0)
+            max_freq = col2.number_input("Max Frequency (Hz)", value=20000)
+            min_db = col3.number_input("Min dB", value=-100)
+            max_db = col4.number_input("Max dB", value=0)
 
             waveform_fig = go.Figure()
             freq_fig = go.Figure()
+            peak_data = []
+            band_energy_data = []
+            pca_vectors = []
+            file_labels = []
             processed_csvs = {}
 
             for file in selected_files:
                 with zip_ref.open(file) as wav_file:
                     samplerate, data = wavfile.read(io.BytesIO(wav_file.read()))
-
                     if data.ndim > 1:
-                        data = data.mean(axis=1)  # mono
+                        data = data.mean(axis=1)
 
-                    # Waveform (Amplitude over Time)
-                    window_size = int(samplerate * (interval_ms / 1000.0))
-                    trimmed_len = len(data) - len(data) % window_size
-                    data_wave = data[:trimmed_len]
-                    reshaped = data_wave.reshape(-1, window_size)
-                    avg_values = reshaped.mean(axis=1)
-                    time_axis = np.arange(len(avg_values)) * interval_ms
+                    # Time-domain
+                    window_size = int(samplerate * interval_ms / 1000)
+                    trimmed = len(data) - len(data) % window_size
+                    reshaped = data[:trimmed].reshape(-1, window_size)
+                    avg = reshaped.mean(axis=1)
+                    time_axis = np.arange(len(avg)) * interval_ms
 
-                    df = pd.DataFrame({
-                        "Time (ms)": time_axis,
-                        "Amplitude": avg_values
-                    })
+                    df = pd.DataFrame({"Time (ms)": time_axis, "Amplitude": avg})
                     processed_csvs[file] = df
 
-                    waveform_fig.add_trace(go.Scatter(
-                        x=df["Time (ms)"],
-                        y=df["Amplitude"],
-                        mode="lines",
-                        name=file
-                    ))
+                    waveform_fig.add_trace(go.Scatter(x=df["Time (ms)"], y=df["Amplitude"],
+                                                      mode="lines", name=file))
 
-                    # Frequency Domain (dB vs Frequency)
+                    # FFT
                     freqs, psd = welch(data, fs=samplerate, nperseg=2048)
-                    db = 10 * np.log10(psd + 1e-12)  # avoid log(0)
-                    freq_mask = (freqs >= min_freq) & (freqs <= max_freq)
+                    db = 10 * np.log10(psd + 1e-12)
+                    mask = (freqs >= min_freq) & (freqs <= max_freq)
 
                     freq_fig.add_trace(go.Scatter(
-                        x=freqs[freq_mask],
-                        y=np.clip(db[freq_mask], min_db, max_db),
-                        mode="lines",
-                        fill='tozeroy',
-                        name=file
+                        x=freqs[mask], y=np.clip(db[mask], min_db, max_db),
+                        mode="lines", fill='tozeroy', name=file
                     ))
 
+                    # --- Enhancement 1: Spectrogram ---
+                    st.subheader(f"🎨 Spectrogram - {file}")
+                    f, t, Sxx = spectrogram(data, fs=samplerate, nperseg=1024, noverlap=512)
+                    Sxx_dB = 10 * np.log10(Sxx + 1e-10)
+                    f_mask = (f >= min_freq) & (f <= max_freq)
+
+                    st.plotly_chart(go.Figure(
+                        data=go.Heatmap(
+                            z=Sxx_dB[f_mask],
+                            x=t,
+                            y=f[f_mask],
+                            colorscale="Viridis",
+                            zmin=min_db,
+                            zmax=max_db,
+                            colorbar=dict(title="dB")),
+                        layout=go.Layout(
+                            title=f"Spectrogram for {file}",
+                            xaxis_title="Time (s)",
+                            yaxis_title="Frequency (Hz)",
+                            height=400
+                        )
+                    ), use_container_width=True)
+
+                    # --- Enhancement 2: Band Energy ---
+                    bands = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
+                    energy_per_band = []
+                    for b_start, b_end in bands:
+                        band_mask = (freqs >= b_start) & (freqs < b_end)
+                        energy = np.mean(psd[band_mask]) if band_mask.any() else 0
+                        energy_per_band.append(energy)
+                    band_energy_data.append((file, energy_per_band))
+
+                    # --- Enhancement 3: Peak Frequencies ---
+                    peaks, _ = find_peaks(db, height=np.max(db) - 10)
+                    peak_freqs = freqs[peaks]
+                    peak_data.extend(peak_freqs)
+
+                    # --- Enhancement 4: PCA input ---
+                    fft_profile = db[mask]
+                    pca_vectors.append(fft_profile)
+                    file_labels.append(file)
+
             if selected_files:
-                st.subheader("📈 Time-Domain Waveform")
+                st.subheader("📈 Time-Domain Signal")
                 st.plotly_chart(waveform_fig, use_container_width=True)
 
-                st.subheader("🔊 Frequency-Domain (Power Spectral Density)")
-                freq_fig.update_layout(
-                    xaxis_title="Frequency (Hz)",
-                    yaxis_title="dB",
-                    yaxis=dict(range=[min_db, max_db])
-                )
+                st.subheader("🔊 Frequency-Domain Spectrum")
+                freq_fig.update_layout(xaxis_title="Frequency (Hz)", yaxis_title="dB")
                 st.plotly_chart(freq_fig, use_container_width=True)
 
-                # Download buttons
+                # --- Enhancement 2: Band Energy Plot ---
+                st.subheader("📊 Band Energy (Bar & Radar)")
+                band_labels = [f"{start//1000}-{end//1000}kHz" for start, end in bands]
+
+                # Bar plot
+                bar_fig = go.Figure()
+                for file, energies in band_energy_data:
+                    bar_fig.add_trace(go.Bar(x=band_labels, y=energies, name=file))
+                bar_fig.update_layout(barmode="group", xaxis_title="Frequency Band", yaxis_title="Avg Energy")
+                st.plotly_chart(bar_fig, use_container_width=True)
+
+                # Radar plot
+                radar_fig = go.Figure()
+                for file, energies in band_energy_data:
+                    radar_fig.add_trace(go.Scatterpolar(
+                        r=energies + [energies[0]],
+                        theta=band_labels + [band_labels[0]],
+                        fill='toself',
+                        name=file
+                    ))
+                radar_fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True)
+                st.plotly_chart(radar_fig, use_container_width=True)
+
+                # --- Enhancement 3: Peak Histogram ---
+                st.subheader("📌 Histogram of FFT Peak Frequencies")
+                hist_fig = go.Figure()
+                hist_fig.add_trace(go.Histogram(x=peak_data, nbinsx=50, name="Peak Frequencies"))
+                hist_fig.update_layout(xaxis_title="Frequency (Hz)", yaxis_title="Count")
+                st.plotly_chart(hist_fig, use_container_width=True)
+
+                # --- Enhancement 4: PCA Plot ---
+                st.subheader("📉 PCA - Frequency Profile Projection")
+                try:
+                    pca = PCA(n_components=2)
+                    reduced = pca.fit_transform(np.array(pca_vectors))
+                    pca_fig = go.Figure()
+                    for i, label in enumerate(file_labels):
+                        pca_fig.add_trace(go.Scatter(
+                            x=[reduced[i, 0]], y=[reduced[i, 1]],
+                            mode="markers+text", text=[label], name=label,
+                            textposition="top center"
+                        ))
+                    pca_fig.update_layout(xaxis_title="PC1", yaxis_title="PC2")
+                    st.plotly_chart(pca_fig, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"PCA Error: {e}")
+
+                # --- CSV Downloads ---
+                st.subheader("📥 Download Processed CSVs")
                 if len(selected_files) == 1:
                     file = selected_files[0]
                     csv = processed_csvs[file].to_csv(index=False).encode("utf-8")
