@@ -106,8 +106,8 @@ if train_zip:
     if test_zip:
         st.subheader("🧪 Test Data & Predictions")
         test_X, _, test_names = process_zip_file(test_zip, is_training=False)
-        if normalize:
-            test_X = scaler.transform(test_X)
+        # if normalize:
+        #     test_X = scaler.transform(test_X)
 
         preds = clf.predict(test_X)
 
