@@ -10,15 +10,13 @@ from scipy.signal import welch, find_peaks
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
-from sklearn.decomposition import PCA
-from scipy.interpolate import interp1d
 from tempfile import TemporaryDirectory
 
-# Set page config
+# Page settings
 st.set_page_config(layout="wide")
-st.title("🎧 Welding Sound Classifier")
+st.title("🎧 Welding Sound Classification App")
 
-# Color map for labels
+# --- Global Settings ---
 label_colors = {
     "OK": "green",
     "ALU_GAP": "orange",
@@ -27,165 +25,179 @@ label_colors = {
     "CU_POWER": "purple"
 }
 
-# Extract label from folder name
-def extract_label_from_path(path):
-    folder = os.path.dirname(path).split("/")[-1].upper()
-    return folder.replace("ALL_", "OK")
+bands = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
 
-# Extract WAV data from ZIP
-def process_zip(zip_file, is_training=True):
-    features = []
-    labels = []
-    waveforms = []
-    fft_peaks = []
+# --- Helper Functions ---
+
+def extract_label_from_train_path(path):
+    parts = path.strip("/").split("/")
+    if len(parts) > 1:
+        return parts[-2].replace("ALL_", "OK").upper()
+    return "UNKNOWN"
+
+def downsample_waveform(data, samplerate):
+    window_size = int(samplerate * 0.01)
+    trimmed_len = len(data) - len(data) % window_size
+    reshaped = data[:trimmed_len].reshape(-1, window_size)
+    return reshaped.mean(axis=1)
+
+def extract_band_energy(freqs, psd):
     band_energies = []
+    for low, high in bands:
+        mask = (freqs >= low) & (freqs < high)
+        energy = np.mean(psd[mask]) if mask.any() else 0
+        band_energies.append(energy)
+    return band_energies
 
+def process_zip_file(zip_file, is_training=True):
     waveform_fig = go.Figure()
     freq_fig = go.Figure()
-    radar_fig = go.Figure()
     bar_fig = go.Figure()
+    radar_fig = go.Figure()
+    fft_peak_hist = []
 
-    peak_freq_all = []
+    features, labels = [], []
+    test_file_features = []
 
-    with zipfile.ZipFile(zip_file, "r") as zip_ref:
-        wav_files = [f for f in zip_ref.namelist() if f.endswith(".wav")]
-        for file in wav_files:
-            with zip_ref.open(file) as wav_file:
-                samplerate, data = wavfile.read(io.BytesIO(wav_file.read()))
+    with TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_file, "r") as zip_ref:
+            zip_ref.extractall(tmpdir)
+
+            wav_paths = []
+            if is_training:
+                # Traverse subfolders
+                for root, _, files in os.walk(tmpdir):
+                    for file in files:
+                        if file.endswith(".wav"):
+                            wav_paths.append(os.path.join(root, file))
+            else:
+                # Flat structure
+                wav_paths = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".wav")]
+
+            for path in wav_paths:
+                samplerate, data = wavfile.read(path)
                 if data.ndim > 1:
                     data = data.mean(axis=1)
-                
-                label = extract_label_from_path(file) if is_training else None
-                color = label_colors.get(label, "gray") if label else "black"
 
-                # --- Time-Domain Downsample ---
-                window_size = int(samplerate * 0.01)
-                trimmed = len(data) - len(data) % window_size
-                reshaped = data[:trimmed].reshape(-1, window_size)
-                avg = reshaped.mean(axis=1)
-                time_axis = np.arange(len(avg)) * 10  # ms
+                label = extract_label_from_train_path(path) if is_training else None
+                color = label_colors.get(label, "black") if label else "black"
+                line_dash = "solid" if is_training else "dash"
 
+                # --- Time-Domain Plot ---
+                waveform = downsample_waveform(data, samplerate)
+                time_axis = np.arange(len(waveform)) * 10  # ms
                 waveform_fig.add_trace(go.Scatter(
-                    x=time_axis, y=avg,
-                    mode="lines", name=f"{file} ({label if label else 'Test'})",
-                    line=dict(color=color, dash="solid" if is_training else "dash")
+                    x=time_axis, y=waveform,
+                    mode="lines", name=os.path.basename(path),
+                    line=dict(color=color, dash=line_dash)
                 ))
 
                 # --- Frequency-Domain ---
                 freqs, psd = welch(data, fs=samplerate, nperseg=2048)
                 db = 10 * np.log10(psd + 1e-12)
                 mask = (freqs >= 0) & (freqs <= 20000)
-                freqs_masked = freqs[mask]
-                db_masked = db[mask]
+                freqs, db = freqs[mask], db[mask]
 
                 freq_fig.add_trace(go.Scatter(
-                    x=freqs_masked,
-                    y=db_masked,
-                    mode="lines",
-                    fill='tozeroy',
-                    name=f"{file} ({label if label else 'Test'})",
-                    line=dict(color=color, dash="solid" if is_training else "dash")
+                    x=freqs, y=db,
+                    mode="lines", name=os.path.basename(path),
+                    line=dict(color=color, dash=line_dash),
+                    fill='tozeroy'
                 ))
 
                 # --- Band Energy ---
-                bands = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
-                energy_per_band = []
-                for b_start, b_end in bands:
-                    band_mask = (freqs >= b_start) & (freqs < b_end)
-                    energy = np.mean(psd[band_mask]) if band_mask.any() else 0
-                    energy_per_band.append(energy)
+                energy = extract_band_energy(freqs, psd)
+                band_labels = [f"{low//1000}-{high//1000}kHz" for low, high in bands]
 
                 bar_fig.add_trace(go.Bar(
-                    x=[f"{s//1000}-{e//1000}kHz" for s, e in bands],
-                    y=energy_per_band,
-                    name=f"{file} ({label if label else 'Test'})",
+                    x=band_labels, y=energy,
+                    name=os.path.basename(path),
                     marker_color=color
                 ))
 
                 radar_fig.add_trace(go.Scatterpolar(
-                    r=energy_per_band + [energy_per_band[0]],
-                    theta=[f"{s//1000}-{e//1000}kHz" for s, e in bands] + [f"{bands[0][0]//1000}-{bands[0][1]//1000}kHz"],
+                    r=energy + [energy[0]],
+                    theta=band_labels + [band_labels[0]],
                     fill='toself',
-                    name=f"{file} ({label if label else 'Test'})",
-                    line=dict(color=color, dash="solid" if is_training else "dash")
+                    name=os.path.basename(path),
+                    line=dict(color=color, dash=line_dash)
                 ))
 
-                # --- FFT Peak Frequencies ---
+                # --- FFT Peak Histogram ---
                 peaks, _ = find_peaks(db, height=np.max(db) - 10)
-                peak_freqs = freqs[peaks]
-                peak_freq_all.extend(peak_freqs)
+                fft_peak_hist.extend(freqs[peaks])
 
                 if is_training:
-                    features.append(energy_per_band)
+                    features.append(energy)
                     labels.append(label)
                 else:
-                    band_energies.append((file, energy_per_band))
+                    test_file_features.append((os.path.basename(path), energy))
 
     return {
         "waveform_fig": waveform_fig,
         "freq_fig": freq_fig,
-        "radar_fig": radar_fig,
         "bar_fig": bar_fig,
+        "radar_fig": radar_fig,
+        "fft_peak_freqs": fft_peak_hist,
         "features": features,
         "labels": labels,
-        "peak_freqs": peak_freq_all,
-        "test_features": band_energies
+        "test_features": test_file_features
     }
 
-# --- Upload Training Data ---
-st.sidebar.header("🔧 Training Data")
-train_zip = st.sidebar.file_uploader("Upload Training ZIP", type="zip")
+# --- Streamlit Layout ---
 
+st.sidebar.header("📥 Upload Files")
+train_zip = st.sidebar.file_uploader("Upload Training ZIP", type="zip", key="train_zip")
+test_zip = st.sidebar.file_uploader("Upload Test ZIP", type="zip", key="test_zip")
+
+# --- Training Phase ---
 if train_zip:
-    st.header("📊 Training Data Visualizations")
-    result = process_zip(train_zip, is_training=True)
+    st.header("🔧 Training Data Visualizations")
+    train_data = process_zip_file(train_zip, is_training=True)
 
-    st.subheader("Waveform (Time-Domain)")
-    st.plotly_chart(result["waveform_fig"], use_container_width=True)
+    st.subheader("📈 Waveform")
+    st.plotly_chart(train_data["waveform_fig"], use_container_width=True)
 
-    st.subheader("Spectrum (Frequency-Domain)")
-    st.plotly_chart(result["freq_fig"], use_container_width=True)
+    st.subheader("🔊 Spectrum")
+    st.plotly_chart(train_data["freq_fig"], use_container_width=True)
 
-    st.subheader("Band Energy - Bar Plot")
-    st.plotly_chart(result["bar_fig"], use_container_width=True)
+    st.subheader("📊 Band Energy - Bar")
+    st.plotly_chart(train_data["bar_fig"], use_container_width=True)
 
-    st.subheader("Band Energy - Radar Plot")
-    st.plotly_chart(result["radar_fig"], use_container_width=True)
+    st.subheader("🧭 Band Energy - Radar")
+    st.plotly_chart(train_data["radar_fig"], use_container_width=True)
 
-    st.subheader("Histogram of FFT Peak Frequencies")
-    st.plotly_chart(go.Figure([go.Histogram(x=result["peak_freqs"], nbinsx=50)]), use_container_width=True)
+    st.subheader("📉 Histogram of FFT Peak Frequencies")
+    st.plotly_chart(go.Figure([go.Histogram(x=train_data["fft_peak_freqs"], nbinsx=50)]), use_container_width=True)
 
-    # --- Train Classifier ---
-    st.subheader("🤖 Classifier Performance")
-    X_train, X_test, y_train, y_test = train_test_split(result["features"], result["labels"], test_size=0.2, stratify=result["labels"])
+    st.subheader("🤖 Training Classifier")
+    X_train, X_test, y_train, y_test = train_test_split(train_data["features"], train_data["labels"], test_size=0.2, stratify=train_data["labels"], random_state=42)
     model = RandomForestClassifier(random_state=42)
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
     st.text(classification_report(y_test, y_pred))
 
-    # --- Upload Test Data ---
-    st.sidebar.header("🧪 Test Data")
-    test_zip = st.sidebar.file_uploader("Upload Test ZIP", type="zip")
-
+    # --- Test Phase ---
     if test_zip:
-        st.header("🧪 Test Data Predictions & Visualizations")
-        test_result = process_zip(test_zip, is_training=False)
+        st.header("🧪 Test Data & Predictions")
+        test_data = process_zip_file(test_zip, is_training=False)
 
-        # Predict
-        test_file_labels = []
-        for file, feature in test_result["test_features"]:
-            predicted = model.predict([feature])[0]
-            test_file_labels.append((file, predicted))
-            st.write(f"✅ **{file}** → Predicted as **{predicted}**")
+        for filename, feature in test_data["test_features"]:
+            prediction = model.predict([feature])[0]
+            st.success(f"✅ **{filename}** → Predicted as **{prediction}**")
 
-        # Merge plots
-        st.subheader("Waveform (Including Test Data)")
-        merged_waveform = result["waveform_fig"]
-        for trace in test_result["waveform_fig"].data:
-            merged_waveform.add_trace(trace)
-        st.plotly_chart(merged_waveform, use_container_width=True)
+        # Add test plots
+        for trace in test_data["waveform_fig"].data:
+            train_data["waveform_fig"].add_trace(trace)
+        st.subheader("📈 Waveform (with Test)")
+        st.plotly_chart(train_data["waveform_fig"], use_container_width=True)
 
-        st.subheader("Spectrum (Including Test Data)")
-        merged_freq = result["freq_fig"]
-        for trace in test_result["freq_fig"].data:
-            merged_freq.add_trace
+        for trace in test_data["freq_fig"].data:
+            train_data["freq_fig"].add_trace(trace)
+        st.subheader("🔊 Spectrum (with Test)")
+        st.plotly_chart(train_data["freq_fig"], use_container_width=True)
+
+        for trace in test_data["radar_fig"].data:
+            train_data["radar_fig"].add_trace(trace)
+        st.subheader("🧭 Radar Energy (with Test)")
+        st.plotly_chart(train_data["radar_fig"], use_container_width=True)
