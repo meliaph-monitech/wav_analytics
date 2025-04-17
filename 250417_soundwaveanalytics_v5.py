@@ -127,9 +127,18 @@ if zip_file:
         feature_df['cluster'] = clusters
 
         fig_pca = px.scatter(
-            feature_df, x='PC1', y='PC2', color=feature_df['label'], symbol=feature_df['cluster'].astype(str),
-            hover_data=['filename'], title="PCA Scatter with Cluster Overlay")
+            feature_df,
+            x='PC1',
+            y='PC2',
+            color='label',                    # Color by category (OK, GAP, POWER)
+            symbol='cluster',                # Shape by cluster number
+            symbol_sequence=["circle", "square", "diamond", "cross", "x", "triangle-up", "triangle-down", "star"],
+            hover_data=['filename'],
+            title="PCA Scatter with Cluster Overlay"
+        )
+        fig_pca.update_traces(marker=dict(size=10, line=dict(width=1, color='DarkSlateGrey')))
         st.plotly_chart(fig_pca, use_container_width=True)
+
 
         # Download processed time data
         st.markdown("---")
