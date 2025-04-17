@@ -31,8 +31,8 @@ UNIFORM_FREQS = np.linspace(0, 20000, 200)
 def extract_features(wav_data, samplerate):
     if wav_data.ndim > 1:
         wav_data = wav_data.mean(axis=1)
-    if normalize:
-        wav_data = wav_data / np.max(np.abs(wav_data))
+    # if normalize:
+    #     wav_data = wav_data / np.max(np.abs(wav_data))
 
     freqs, psd = welch(wav_data, fs=samplerate, nperseg=2048)
     db = 10 * np.log10(psd + 1e-12)
@@ -82,9 +82,9 @@ if train_zip:
     train_X, train_y, train_names = process_zip_file(train_zip, is_training=True)
     st.write(f"✅ {len(train_X)} training samples loaded from ZIP.")
 
-    if normalize:
-        scaler = StandardScaler()
-        train_X = scaler.fit_transform(train_X)
+    # if normalize:
+    #     scaler = StandardScaler()
+        # train_X = scaler.fit_transform(train_X)
 
     # PCA for visualization
     pca_vis = PCA(n_components=2)
