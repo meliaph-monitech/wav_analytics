@@ -44,9 +44,13 @@ def downsample_waveform(data, samplerate):
 def extract_band_energy(freqs, psd):
     band_energies = []
     for low, high in bands:
-        mask = (freqs >= low) & (freqs < high)
-        energy = np.mean(psd[mask]) if mask.any() else 0
-        band_energies.append(energy)
+        band_mask = (freqs >= low) & (freqs < high)
+        if not np.any(band_mask):
+            band_energies.append(0)
+            continue
+        freqs_band = freqs[band_mask]
+        psd_band = psd[band_mask]
+        band_energies.append(np.mean(psd_band))
     return band_energies
 
 def process_zip_file(zip_file, is_training=True):
