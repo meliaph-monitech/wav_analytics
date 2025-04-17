@@ -97,7 +97,12 @@ if zip_file:
         feature_df['label'] = labels
         feature_df['filename'] = file_names
 
-        avg_features = feature_df.groupby('label').mean()
+        # Select only numeric feature columns for averaging
+        numeric_cols = ['band_0_5k', 'band_5k_10k', 'band_15k_20k', 'band_20k_up',
+                        'centroid', 'bandwidth', 'flatness', 'rms']
+        
+        avg_features = feature_df.groupby('label')[numeric_cols].mean()
+
         categories = avg_features.columns.tolist()
 
         fig_radar = go.Figure()
