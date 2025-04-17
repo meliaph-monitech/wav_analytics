@@ -1,159 +1,191 @@
 import streamlit as st
 import zipfile
+import io
 import os
-import tempfile
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-import librosa
-import io
+import plotly.graph_objs as go
+from scipy.io import wavfile
+from scipy.signal import welch, find_peaks
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
+from scipy.interpolate import interp1d
+from tempfile import TemporaryDirectory
 
-# Streamlit UI
+# Set page config
 st.set_page_config(layout="wide")
-st.title("WAV File Unsupervised Analysis")
+st.title("🎧 Welding Sound Classifier")
 
-with st.sidebar:
-    zip_file = st.file_uploader("Upload a ZIP of WAV files", type="zip")
-    interval_ms = st.slider("Time Interval (ms)", 1, 100, 10)
-    freq_min = st.number_input("Min Frequency (Hz)", value=0)
-    freq_max = st.number_input("Max Frequency (Hz)", value=22050)
-    db_min = st.number_input("Min dB", value=-100)
-    db_max = st.number_input("Max dB", value=0)
-    cluster_k = st.slider("Number of Clusters (KMeans)", 2, 10, 3)
-    category_filter = st.multiselect("Filter by Category (OK, GAP, POWER)", ["OK", "GAP", "POWER"], default=["OK", "GAP", "POWER"])
+# Color map for labels
+label_colors = {
+    "OK": "green",
+    "ALU_GAP": "orange",
+    "ALU_POWER": "red",
+    "CU_GAP": "blue",
+    "CU_POWER": "purple"
+}
 
-# Temp directory to extract
-if zip_file:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-            zip_ref.extractall(tmpdir)
+# Extract label from folder name
+def extract_label_from_path(path):
+    folder = os.path.dirname(path).split("/")[-1].upper()
+    return folder.replace("ALL_", "OK")
 
-        wav_files = [f for f in os.listdir(tmpdir) if f.endswith(".wav")]
-        wav_files.sort()
+# Extract WAV data from ZIP
+def process_zip(zip_file, is_training=True):
+    features = []
+    labels = []
+    waveforms = []
+    fft_peaks = []
+    band_energies = []
 
-        all_time_data = {}
-        all_fft_data = {}
-        all_features = []
-        labels = []
-        file_names = []
+    waveform_fig = go.Figure()
+    freq_fig = go.Figure()
+    radar_fig = go.Figure()
+    bar_fig = go.Figure()
 
-        for fname in wav_files:
-            label = fname.split("_")[-1].replace(".wav", "").upper()
-            if label not in category_filter:
-                continue
-            fpath = os.path.join(tmpdir, fname)
-            y, sr = librosa.load(fpath, sr=None)
-            interval_samples = int((interval_ms / 1000) * sr)
-            samples = y[::interval_samples]
-            time = np.arange(len(samples)) * interval_ms / 1000
-            all_time_data[fname] = (time, samples)
+    peak_freq_all = []
 
-            # FFT
-            fft = np.abs(np.fft.rfft(y))
-            fft_db = librosa.amplitude_to_db(fft, ref=np.max)
-            freqs = np.fft.rfftfreq(len(y), 1/sr)
-            all_fft_data[fname] = (freqs, fft_db)
+    with zipfile.ZipFile(zip_file, "r") as zip_ref:
+        wav_files = [f for f in zip_ref.namelist() if f.endswith(".wav")]
+        for file in wav_files:
+            with zip_ref.open(file) as wav_file:
+                samplerate, data = wavfile.read(io.BytesIO(wav_file.read()))
+                if data.ndim > 1:
+                    data = data.mean(axis=1)
+                
+                label = extract_label_from_path(file) if is_training else None
+                color = label_colors.get(label, "gray") if label else "black"
 
-            # Feature extraction
-            band_1 = np.mean(fft_db[(freqs >= 0) & (freqs < 5000)])
-            band_2 = np.mean(fft_db[(freqs >= 5000) & (freqs < 10000)])
-            band_3 = np.mean(fft_db[(freqs >= 15000) & (freqs < 20000)])
-            band_4 = np.mean(fft_db[(freqs >= 20000)])
-            centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0].mean()
-            bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr)[0].mean()
-            flatness = librosa.feature.spectral_flatness(y=y)[0].mean()
-            rms = librosa.feature.rms(y=y)[0].mean()
+                # --- Time-Domain Downsample ---
+                window_size = int(samplerate * 0.01)
+                trimmed = len(data) - len(data) % window_size
+                reshaped = data[:trimmed].reshape(-1, window_size)
+                avg = reshaped.mean(axis=1)
+                time_axis = np.arange(len(avg)) * 10  # ms
 
-            feature_vector = [band_1, band_2, band_3, band_4, centroid, bandwidth, flatness, rms]
-            all_features.append(feature_vector)
+                waveform_fig.add_trace(go.Scatter(
+                    x=time_axis, y=avg,
+                    mode="lines", name=f"{file} ({label if label else 'Test'})",
+                    line=dict(color=color, dash="solid" if is_training else "dash")
+                ))
 
-            labels.append(label)
-            file_names.append(fname)
+                # --- Frequency-Domain ---
+                freqs, psd = welch(data, fs=samplerate, nperseg=2048)
+                db = 10 * np.log10(psd + 1e-12)
+                mask = (freqs >= 0) & (freqs <= 20000)
+                freqs_masked = freqs[mask]
+                db_masked = db[mask]
 
-        # Plot time domain
-        fig_time = go.Figure()
-        for fname, (t, s) in all_time_data.items():
-            label = fname.split("_")[-1].replace(".wav", "").upper()
-            fig_time.add_trace(go.Scatter(x=t, y=s, mode='lines', name=label, legendgroup=label))
-        fig_time.update_layout(title="Time Domain (Waveform)", xaxis_title="Time (s)", yaxis_title="Amplitude")
-        st.plotly_chart(fig_time, use_container_width=True)
+                freq_fig.add_trace(go.Scatter(
+                    x=freqs_masked,
+                    y=db_masked,
+                    mode="lines",
+                    fill='tozeroy',
+                    name=f"{file} ({label if label else 'Test'})",
+                    line=dict(color=color, dash="solid" if is_training else "dash")
+                ))
 
-        # Plot FFT area plot
-        fig_fft = go.Figure()
-        for fname, (freqs, fft_db) in all_fft_data.items():
-            mask = (freqs >= freq_min) & (freqs <= freq_max)
-            label = fname.split("_")[-1].replace(".wav", "").upper()
-            fig_fft.add_trace(go.Scatter(x=freqs[mask], y=fft_db[mask], fill='tozeroy', mode='lines', name=label, legendgroup=label))
-        fig_fft.update_layout(title="Frequency Domain (FFT dB)", xaxis_title="Frequency (Hz)", yaxis_title="dB", yaxis_range=[db_min, db_max])
-        st.plotly_chart(fig_fft, use_container_width=True)
+                # --- Band Energy ---
+                bands = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
+                energy_per_band = []
+                for b_start, b_end in bands:
+                    band_mask = (freqs >= b_start) & (freqs < b_end)
+                    energy = np.mean(psd[band_mask]) if band_mask.any() else 0
+                    energy_per_band.append(energy)
 
-        # Radar + Bar chart
-        feature_df = pd.DataFrame(all_features, columns=[
-            'band_0_5k', 'band_5k_10k', 'band_15k_20k', 'band_20k_up',
-            'centroid', 'bandwidth', 'flatness', 'rms'])
-        feature_df['label'] = labels
-        feature_df['filename'] = file_names
+                bar_fig.add_trace(go.Bar(
+                    x=[f"{s//1000}-{e//1000}kHz" for s, e in bands],
+                    y=energy_per_band,
+                    name=f"{file} ({label if label else 'Test'})",
+                    marker_color=color
+                ))
 
-        # Select only numeric feature columns for averaging
-        numeric_cols = ['band_0_5k', 'band_5k_10k', 'band_15k_20k', 'band_20k_up',
-                        'centroid', 'bandwidth', 'flatness', 'rms']
-        
-        avg_features = feature_df.groupby('label')[numeric_cols].mean()
+                radar_fig.add_trace(go.Scatterpolar(
+                    r=energy_per_band + [energy_per_band[0]],
+                    theta=[f"{s//1000}-{e//1000}kHz" for s, e in bands] + [f"{bands[0][0]//1000}-{bands[0][1]//1000}kHz"],
+                    fill='toself',
+                    name=f"{file} ({label if label else 'Test'})",
+                    line=dict(color=color, dash="solid" if is_training else "dash")
+                ))
 
-        categories = avg_features.columns.tolist()
+                # --- FFT Peak Frequencies ---
+                peaks, _ = find_peaks(db, height=np.max(db) - 10)
+                peak_freqs = freqs[peaks]
+                peak_freq_all.extend(peak_freqs)
 
-        fig_radar = go.Figure()
-        for label in avg_features.index:
-            fig_radar.add_trace(go.Scatterpolar(
-                r=avg_features.loc[label].values,
-                theta=categories,
-                fill='toself',
-                name=label
-            ))
-        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True)), title="Radar Plot of Average Features")
-        st.plotly_chart(fig_radar, use_container_width=True)
+                if is_training:
+                    features.append(energy_per_band)
+                    labels.append(label)
+                else:
+                    band_energies.append((file, energy_per_band))
 
-        fig_bar = go.Figure()
-        for label in avg_features.index:
-            fig_bar.add_trace(go.Bar(x=categories, y=avg_features.loc[label].values, name=label))
-        fig_bar.update_layout(barmode='group', title="Band Energy Bar Chart")
-        st.plotly_chart(fig_bar, use_container_width=True)
+    return {
+        "waveform_fig": waveform_fig,
+        "freq_fig": freq_fig,
+        "radar_fig": radar_fig,
+        "bar_fig": bar_fig,
+        "features": features,
+        "labels": labels,
+        "peak_freqs": peak_freq_all,
+        "test_features": band_energies
+    }
 
-        # PCA + KMeans
-        pca = PCA(n_components=2)
-        features_2d = pca.fit_transform(feature_df.drop(columns=['label', 'filename']))
-        kmeans = KMeans(n_clusters=cluster_k, random_state=42)
-        clusters = kmeans.fit_predict(features_2d)
-        feature_df['PC1'] = features_2d[:, 0]
-        feature_df['PC2'] = features_2d[:, 1]
-        feature_df['cluster'] = clusters
+# --- Upload Training Data ---
+st.sidebar.header("🔧 Training Data")
+train_zip = st.sidebar.file_uploader("Upload Training ZIP", type="zip")
 
-        fig_pca = px.scatter(
-            feature_df,
-            x='PC1',
-            y='PC2',
-            color='label',                    # Color by category (OK, GAP, POWER)
-            symbol='cluster',                # Shape by cluster number
-            symbol_sequence=["circle", "square", "diamond", "cross", "x", "triangle-up", "triangle-down", "star"],
-            hover_data=['filename'],
-            title="PCA Scatter with Cluster Overlay"
-        )
-        fig_pca.update_traces(marker=dict(size=10, line=dict(width=1, color='DarkSlateGrey')))
-        st.plotly_chart(fig_pca, use_container_width=True)
+if train_zip:
+    st.header("📊 Training Data Visualizations")
+    result = process_zip(train_zip, is_training=True)
 
+    st.subheader("Waveform (Time-Domain)")
+    st.plotly_chart(result["waveform_fig"], use_container_width=True)
 
-        # Download processed time data
-        st.markdown("---")
-        st.subheader("Download Time-Domain CSVs")
-        for fname, (t, s) in all_time_data.items():
-            df = pd.DataFrame({"time_s": t, "amplitude": s})
-            csv = df.to_csv(index=False).encode()
-            st.download_button(
-                label=f"Download CSV for {fname}",
-                data=csv,
-                file_name=fname.replace(".wav", ".csv"),
-                mime='text/csv'
-            )
+    st.subheader("Spectrum (Frequency-Domain)")
+    st.plotly_chart(result["freq_fig"], use_container_width=True)
+
+    st.subheader("Band Energy - Bar Plot")
+    st.plotly_chart(result["bar_fig"], use_container_width=True)
+
+    st.subheader("Band Energy - Radar Plot")
+    st.plotly_chart(result["radar_fig"], use_container_width=True)
+
+    st.subheader("Histogram of FFT Peak Frequencies")
+    st.plotly_chart(go.Figure([go.Histogram(x=result["peak_freqs"], nbinsx=50)]), use_container_width=True)
+
+    # --- Train Classifier ---
+    st.subheader("🤖 Classifier Performance")
+    X_train, X_test, y_train, y_test = train_test_split(result["features"], result["labels"], test_size=0.2, stratify=result["labels"])
+    model = RandomForestClassifier(random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    st.text(classification_report(y_test, y_pred))
+
+    # --- Upload Test Data ---
+    st.sidebar.header("🧪 Test Data")
+    test_zip = st.sidebar.file_uploader("Upload Test ZIP", type="zip")
+
+    if test_zip:
+        st.header("🧪 Test Data Predictions & Visualizations")
+        test_result = process_zip(test_zip, is_training=False)
+
+        # Predict
+        test_file_labels = []
+        for file, feature in test_result["test_features"]:
+            predicted = model.predict([feature])[0]
+            test_file_labels.append((file, predicted))
+            st.write(f"✅ **{file}** → Predicted as **{predicted}**")
+
+        # Merge plots
+        st.subheader("Waveform (Including Test Data)")
+        merged_waveform = result["waveform_fig"]
+        for trace in test_result["waveform_fig"].data:
+            merged_waveform.add_trace(trace)
+        st.plotly_chart(merged_waveform, use_container_width=True)
+
+        st.subheader("Spectrum (Including Test Data)")
+        merged_freq = result["freq_fig"]
+        for trace in test_result["freq_fig"].data:
+            merged_freq.add_trace
