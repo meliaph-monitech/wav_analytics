@@ -3,6 +3,7 @@ import zipfile
 import os
 import io
 import time
+import colorsys
 import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
@@ -246,44 +247,70 @@ if train_zip:
         # bar_fig.update_layout(title="Prediction Label Distribution", xaxis_title="Label", yaxis_title="Count")
         # st.plotly_chart(bar_fig, use_container_width=True)
 
-        # 🔄 Sankey Diagram to visualize real test label flow        
+
+        # 🔄 Improved Sankey Diagram for Real Test Results        
         true_labels = result_df["True Label"].tolist()
         predicted_labels = result_df["Predicted Label"].tolist()
         
-        # Unique label mapping
+        # Unique label list and color mapping
         label_set = sorted(set(true_labels + predicted_labels))
         label_to_index = {label: i for i, label in enumerate(label_set)}
         
-        # Build source → target links
+        # Generate visually distinct colors
+        def generate_colors(n):
+            hsv_colors = [(x / n, 0.6, 0.9) for x in range(n)]
+            rgb_colors = [colorsys.hsv_to_rgb(*c) for c in hsv_colors]
+            return ['rgba({},{},{},0.8)'.format(int(r*255), int(g*255), int(b*255)) for r, g, b in rgb_colors]
+        
+        node_colors = generate_colors(len(label_set))
+        
+        # Flow mapping: source (true) → target (predicted)
         source = [label_to_index[true] for true, pred in zip(true_labels, predicted_labels)]
         target = [label_to_index[pred] for true, pred in zip(true_labels, predicted_labels)]
         values = [1] * len(source)
         
-        # Aggregate duplicate flows
+        # Aggregate same source-target pairs
         flow_counter = Counter(zip(source, target))
         source_unique, target_unique, value_unique = zip(*[(s, t, v) for (s, t), v in flow_counter.items()])
         
+        # Optional: hover text (True → Pred, Count)
+        hover_text = [
+            f"True: {label_set[s]} → Predicted: {label_set[t]}<br>Count: {v}"
+            for s, t, v in zip(source_unique, target_unique, value_unique)
+        ]
+        
         # Plot Sankey
         fig_sankey = go.Figure(data=[go.Sankey(
+            arrangement="snap",
             node=dict(
-                pad=15,
-                thickness=20,
+                pad=20,
+                thickness=25,
                 line=dict(color="black", width=0.5),
-                label=label_set
+                label=label_set,
+                color=node_colors
             ),
             link=dict(
                 source=source_unique,
                 target=target_unique,
-                value=value_unique
+                value=value_unique,
+                hovertemplate=hover_text,
+                color=["rgba(160,160,160,0.3)" if s == t else "rgba(255,0,0,0.4)" for s, t in zip(source_unique, target_unique)]
             )
         )])
         
-        st.markdown("### 🔄 Real Test Label Flow (True → Predicted)")
+        fig_sankey.update_layout(
+            title="🔄 Real Test Label Flow (True → Predicted)",
+            font=dict(size=14),
+            height=500,
+            margin=dict(l=0, r=0, t=40, b=0)
+        )
+        
         st.plotly_chart(fig_sankey, use_container_width=True)
         
-        # Show accuracy
+        # Accuracy summary
         accuracy = np.mean(result_df["True Label"] == result_df["Predicted Label"])
         st.markdown(f"✅ **Real Test Accuracy:** `{accuracy*100:.2f}%`")
+
 
         st.markdown("### ❌ Misclassified Files")
         misclassified = result_df[result_df["True Label"] != result_df["Predicted Label"]]
