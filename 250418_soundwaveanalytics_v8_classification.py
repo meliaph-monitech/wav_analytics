@@ -9,6 +9,9 @@ from scipy.io import wavfile
 from scipy.signal import welch, find_peaks
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
@@ -21,7 +24,7 @@ st.title("🔊 Welding Sound Classification App")
 st.sidebar.header("Upload ZIP Files")
 train_zip = st.sidebar.file_uploader("📁 Training ZIP (folders as labels)", type="zip")
 test_zip = st.sidebar.file_uploader("🧪 Test ZIP (WAV files only)", type="zip")
-# normalize = st.sidebar.checkbox("☑️ Normalize Amplitude and Features", value=False)
+classifier_name = st.sidebar.selectbox("🤖 Select Classifier", ["RandomForest", "SVM", "KNN", "LogisticRegression"])  # 🔧 Added
 
 # --- Constants ---
 BANDS = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
@@ -31,8 +34,6 @@ UNIFORM_FREQS = np.linspace(0, 20000, 200)
 def extract_features(wav_data, samplerate):
     if wav_data.ndim > 1:
         wav_data = wav_data.mean(axis=1)
-    # if normalize:
-    #     wav_data = wav_data / np.max(np.abs(wav_data))
 
     freqs, psd = welch(wav_data, fs=samplerate, nperseg=2048)
     db = 10 * np.log10(psd + 1e-12)
@@ -76,15 +77,28 @@ def process_zip_file(zip_file, is_training=True):
                         names.append(os.path.basename(f))
     return features, labels if is_training else None, names
 
+def get_classifier(name):
+    if name == "RandomForest":
+        return RandomForestClassifier(n_estimators=100, random_state=42)
+    elif name == "SVM":
+        return SVC(probability=True)
+    elif name == "KNN":
+        return KNeighborsClassifier()
+    elif name == "LogisticRegression":
+        return LogisticRegression(max_iter=1000)
+    return RandomForestClassifier()
+
+def extract_label_from_filename(name):
+    parts = name.rsplit("_", 1)
+    if len(parts) > 1 and "." in parts[1]:
+        return parts[1].split(".")[0]
+    return None
+
 # --- MAIN WORKFLOW ---
 if train_zip:
     st.subheader("📊 Training Data Summary & Visualization")
     train_X, train_y, train_names = process_zip_file(train_zip, is_training=True)
     st.write(f"✅ {len(train_X)} training samples loaded from ZIP.")
-
-    # if normalize:
-    #     scaler = StandardScaler()
-        # train_X = scaler.fit_transform(train_X)
 
     # PCA for visualization
     pca_vis = PCA(n_components=2)
@@ -99,23 +113,43 @@ if train_zip:
     st.plotly_chart(fig_train, use_container_width=True)
 
     # Train classifier
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf = get_classifier(classifier_name)
     clf.fit(train_X, train_y)
-    st.success("🎯 Classifier trained successfully!")
+    st.success(f"🎯 {classifier_name} trained successfully!")
+
+    # Evaluate on training data
+    train_preds = clf.predict(train_X)
+    st.subheader("📈 Training Evaluation Metrics")
+    st.text("Confusion Matrix:")
+    fig_cm, ax_cm = plt.subplots()
+    ConfusionMatrixDisplay.from_predictions(train_y, train_preds, ax=ax_cm)
+    st.pyplot(fig_cm)
+    st.text("Classification Report:")
+    st.text(classification_report(train_y, train_preds))
 
     if test_zip:
         st.subheader("🧪 Test Data & Predictions")
         test_X, _, test_names = process_zip_file(test_zip, is_training=False)
-        # if normalize:
-        #     test_X = scaler.transform(test_X)
-
         preds = clf.predict(test_X)
 
         result_df = pd.DataFrame({
             "Filename": test_names,
             "Predicted Label": preds
         })
+
+        # Extract label from filename
+        result_df["True Label"] = result_df["Filename"].apply(extract_label_from_filename)
+        result_df["Match"] = result_df["Predicted Label"] == result_df["True Label"]
+
         st.dataframe(result_df)
+
+        # Real-world accuracy
+        real_labels = result_df.dropna(subset=["True Label"])
+        if not real_labels.empty:
+            accuracy = (real_labels["Match"].sum() / len(real_labels)) * 100
+            st.metric("🎯 Real Test Accuracy", f"{accuracy:.2f}%")
+        else:
+            st.warning("⚠️ No ground truth labels found in filenames for real test evaluation.")
 
         # Prediction count bar chart
         bar_fig = go.Figure()
