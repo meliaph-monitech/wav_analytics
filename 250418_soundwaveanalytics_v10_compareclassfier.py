@@ -134,10 +134,24 @@ if train_zip:
     train_2d = pca_vis.fit_transform(train_X)
     df_vis = pd.DataFrame(train_2d, columns=["PC1", "PC2"])
     df_vis["label"] = train_y
+    # fig_train = go.Figure()
+    # for label in sorted(set(train_y)):
+    #     subset = df_vis[df_vis["label"] == label]
+    #     fig_train.add_trace(go.Scatter(x=subset["PC1"], y=subset["PC2"], mode="markers", name=label))
+    df_vis["Filename"] = train_names
+    
     fig_train = go.Figure()
     for label in sorted(set(train_y)):
         subset = df_vis[df_vis["label"] == label]
-        fig_train.add_trace(go.Scatter(x=subset["PC1"], y=subset["PC2"], mode="markers", name=label))
+        fig_train.add_trace(go.Scatter(
+            x=subset["PC1"],
+            y=subset["PC2"],
+            mode="markers",
+            name=label,
+            text=subset["Filename"],
+            hoverinfo="text+name+x+y"
+        ))
+
     fig_train.update_layout(title="PCA Visualization of Training Data", xaxis_title="PC1", yaxis_title="PC2")
     st.plotly_chart(fig_train, use_container_width=True)
 
