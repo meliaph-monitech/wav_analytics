@@ -2,6 +2,7 @@ import streamlit as st
 import zipfile
 import os
 import io
+import time
 import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
@@ -155,10 +156,28 @@ if train_zip:
     fig_train.update_layout(title="PCA Visualization of Training Data", xaxis_title="PC1", yaxis_title="PC2")
     st.plotly_chart(fig_train, use_container_width=True)
 
-    # Train classifier
+    # # Train classifier
+    # clf = get_classifier(classifier_name)
+    # clf.fit(train_X, train_y)
+    # st.success(f"🎯 {classifier_name} trained successfully!")
+
+    st.subheader("🛠️ Training Classifier")
+    
+    # Progress bar and training time
+    progress = st.progress(0)
+    status_text = st.empty()
+    start_time = time.time()
+    
     clf = get_classifier(classifier_name)
+    status_text.text(f"Training {classifier_name} model...")
+    progress.progress(30)
     clf.fit(train_X, train_y)
-    st.success(f"🎯 {classifier_name} trained successfully!")
+    progress.progress(100)
+    
+    end_time = time.time()
+    train_duration = end_time - start_time
+    status_text.text(f"{classifier_name} trained in {train_duration:.2f} seconds ✅")
+
 
     # Evaluate on training data
     train_preds = clf.predict(train_X)
@@ -181,12 +200,18 @@ if train_zip:
         st.pyplot(fig_cm)
     
     # Classification Report as Table
+    # with col2:
+    #     st.markdown("#### Classification Report")
+    #     report_dict = classification_report(train_y, clf.predict(train_X), output_dict=True)
+    #     report_df = pd.DataFrame(report_dict).transpose()
+    #     st.dataframe(report_df.style.format(precision=2))
     with col2:
         st.markdown("#### Classification Report")
         report_dict = classification_report(train_y, clf.predict(train_X), output_dict=True)
         report_df = pd.DataFrame(report_dict).transpose()
         st.dataframe(report_df.style.format(precision=2))
-
+    
+        st.markdown(f"⏱️ **Training Time:** `{train_duration:.2f} seconds`")
 
     if test_zip:
         st.subheader("🧪 Test Data & Predictions")
