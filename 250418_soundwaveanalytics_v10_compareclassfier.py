@@ -148,13 +148,31 @@ if train_zip:
 
     # Evaluate on training data
     train_preds = clf.predict(train_X)
-    st.subheader("📈 Training Evaluation Metrics")
-    st.text("Confusion Matrix:")
-    fig_cm, ax_cm = plt.subplots()
-    ConfusionMatrixDisplay.from_predictions(train_y, train_preds, ax=ax_cm)
-    st.pyplot(fig_cm)
-    st.text("Classification Report:")
-    st.text(classification_report(train_y, train_preds))
+    # st.subheader("📈 Training Evaluation Metrics")
+    # st.text("Confusion Matrix:")
+    # fig_cm, ax_cm = plt.subplots()
+    # ConfusionMatrixDisplay.from_predictions(train_y, train_preds, ax=ax_cm)
+    # st.pyplot(fig_cm)
+    # st.text("Classification Report:")
+    # st.text(classification_report(train_y, train_preds)
+    st.subheader("📈 Model Evaluation on Training Data")
+    
+    col1, col2 = st.columns(2)
+    
+    # Confusion Matrix
+    with col1:
+        st.markdown("#### Confusion Matrix")
+        fig_cm, ax_cm = plt.subplots()
+        ConfusionMatrixDisplay.from_predictions(train_y, clf.predict(train_X), ax=ax_cm)
+        st.pyplot(fig_cm)
+    
+    # Classification Report as Table
+    with col2:
+        st.markdown("#### Classification Report")
+        report_dict = classification_report(train_y, clf.predict(train_X), output_dict=True)
+        report_df = pd.DataFrame(report_dict).transpose()
+        st.dataframe(report_df.style.format(precision=2))
+
 
     if test_zip:
         st.subheader("🧪 Test Data & Predictions")
