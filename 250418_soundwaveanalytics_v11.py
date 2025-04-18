@@ -200,18 +200,18 @@ if train_zip:
         st.pyplot(fig_cm)
     
     # Classification Report as Table
-    # with col2:
-    #     st.markdown("#### Classification Report")
-    #     report_dict = classification_report(train_y, clf.predict(train_X), output_dict=True)
-    #     report_df = pd.DataFrame(report_dict).transpose()
-    #     st.dataframe(report_df.style.format(precision=2))
     with col2:
         st.markdown("#### Classification Report")
         report_dict = classification_report(train_y, clf.predict(train_X), output_dict=True)
         report_df = pd.DataFrame(report_dict).transpose()
         st.dataframe(report_df.style.format(precision=2))
+    # with col2:
+    #     st.markdown("#### Classification Report")
+    #     report_dict = classification_report(train_y, clf.predict(train_X), output_dict=True)
+    #     report_df = pd.DataFrame(report_dict).transpose()
+    #     st.dataframe(report_df.style.format(precision=2))
     
-        st.markdown(f"⏱️ **Training Time:** `{train_duration:.2f} seconds`")
+    #     st.markdown(f"⏱️ **Training Time:** `{train_duration:.2f} seconds`")
 
     if test_zip:
         st.subheader("🧪 Test Data & Predictions")
