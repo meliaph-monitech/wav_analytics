@@ -6,6 +6,8 @@ import time
 import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
+import plotly.graph_objects as go
+from collections import Counter
 from scipy.io import wavfile
 from scipy.signal import welch, find_peaks
 from sklearn.decomposition import PCA
@@ -237,12 +239,55 @@ if train_zip:
         else:
             st.warning("⚠️ No ground truth labels found in filenames for real test evaluation.")
 
-        # Prediction count bar chart
-        bar_fig = go.Figure()
-        label_counts = result_df["Predicted Label"].value_counts()
-        bar_fig.add_trace(go.Bar(x=label_counts.index, y=label_counts.values))
-        bar_fig.update_layout(title="Prediction Label Distribution", xaxis_title="Label", yaxis_title="Count")
-        st.plotly_chart(bar_fig, use_container_width=True)
+        # # Prediction count bar chart
+        # bar_fig = go.Figure()
+        # label_counts = result_df["Predicted Label"].value_counts()
+        # bar_fig.add_trace(go.Bar(x=label_counts.index, y=label_counts.values))
+        # bar_fig.update_layout(title="Prediction Label Distribution", xaxis_title="Label", yaxis_title="Count")
+        # st.plotly_chart(bar_fig, use_container_width=True)
+
+        # 🔄 Sankey Diagram to visualize real test label flow        
+        true_labels = result_df["True Label"].tolist()
+        predicted_labels = result_df["Predicted Label"].tolist()
+        
+        # Unique label mapping
+        label_set = sorted(set(true_labels + predicted_labels))
+        label_to_index = {label: i for i, label in enumerate(label_set)}
+        
+        # Build source → target links
+        source = [label_to_index[true] for true, pred in zip(true_labels, predicted_labels)]
+        target = [label_to_index[pred] for true, pred in zip(true_labels, predicted_labels)]
+        values = [1] * len(source)
+        
+        # Aggregate duplicate flows
+        flow_counter = Counter(zip(source, target))
+        source_unique, target_unique, value_unique = zip(*[(s, t, v) for (s, t), v in flow_counter.items()])
+        
+        # Plot Sankey
+        fig_sankey = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=label_set
+            ),
+            link=dict(
+                source=source_unique,
+                target=target_unique,
+                value=value_unique
+            )
+        )])
+        
+        st.markdown("### 🔄 Real Test Label Flow (True → Predicted)")
+        st.plotly_chart(fig_sankey, use_container_width=True)
+        
+        # Show accuracy
+        accuracy = np.mean(result_df["True Label"] == result_df["Predicted Label"])
+        st.markdown(f"✅ **Real Test Accuracy:** `{accuracy*100:.2f}%`")
+
+        st.markdown("### ❌ Misclassified Files")
+        misclassified = result_df[result_df["True Label"] != result_df["Predicted Label"]]
+        st.dataframe(misclassified)
 
         # Download results
         csv = result_df.to_csv(index=False).encode("utf-8")
