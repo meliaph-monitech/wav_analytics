@@ -12,6 +12,11 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier, ExtraTreesClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neural_network import MLPClassifier
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis, LinearDiscriminantAnalysis
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
@@ -24,7 +29,15 @@ st.title("🔊 Welding Sound Classification App")
 st.sidebar.header("Upload ZIP Files")
 train_zip = st.sidebar.file_uploader("📁 Training ZIP (folders as labels)", type="zip")
 test_zip = st.sidebar.file_uploader("🧪 Test ZIP (WAV files only)", type="zip")
-classifier_name = st.sidebar.selectbox("🤖 Select Classifier", ["RandomForest", "SVM", "KNN", "LogisticRegression"])  # 🔧 Added
+classifier_name = st.sidebar.selectbox(
+    "🤖 Select Classifier",
+    [
+        "RandomForest", "SVM", "KNN", "LogisticRegression",
+        "DecisionTree", "GradientBoosting", "AdaBoost",
+        "NaiveBayes", "MLP", "ExtraTrees", "QDA", "LDA"
+    ]
+)
+
 
 # --- Constants ---
 BANDS = [(0, 5000), (5000, 10000), (10000, 15000), (15000, 20000)]
@@ -86,6 +99,22 @@ def get_classifier(name):
         return KNeighborsClassifier()
     elif name == "LogisticRegression":
         return LogisticRegression(max_iter=1000)
+    elif name == "DecisionTree":
+        return DecisionTreeClassifier()
+    elif name == "GradientBoosting":
+        return GradientBoostingClassifier()
+    elif name == "AdaBoost":
+        return AdaBoostClassifier()
+    elif name == "NaiveBayes":
+        return GaussianNB()
+    elif name == "MLP":
+        return MLPClassifier(max_iter=500)
+    elif name == "ExtraTrees":
+        return ExtraTreesClassifier()
+    elif name == "QDA":
+        return QuadraticDiscriminantAnalysis()
+    elif name == "LDA":
+        return LinearDiscriminantAnalysis()
     return RandomForestClassifier()
 
 def extract_label_from_filename(name):
