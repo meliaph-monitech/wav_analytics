@@ -199,7 +199,7 @@ if train_zip:
     with col1:
         st.markdown("#### Confusion Matrix")
         fig_cm, ax_cm = plt.subplots()
-        ConfusionMatrixDisplay.from_predictions(train_y, clf.predict(train_X), ax=ax_cm, cmap='RdBu')
+        ConfusionMatrixDisplay.from_predictions(train_y, clf.predict(train_X), ax=ax_cm, cmap='bone')
         st.pyplot(fig_cm)
     
     # Classification Report as Table
