@@ -8,6 +8,7 @@ import plotly.graph_objs as go
 from scipy.io import wavfile
 from scipy.signal import welch
 from tempfile import TemporaryDirectory
+import plotly.colors
 
 st.title("📊 WAV Visualizer & Frequency Explorer")
 
@@ -39,6 +40,10 @@ if uploaded_zip:
             freq_fig = go.Figure()
             processed_csvs = {}
 
+            # Generate a color map for consistent coloring
+            color_palette = plotly.colors.qualitative.Plotly  # Use Plotly's default color palette
+            color_map = {file: color_palette[i % len(color_palette)] for i, file in enumerate(wav_files)}
+
             for file in selected_files:
                 with zip_ref.open(file) as wav_file:
                     samplerate, data = wavfile.read(io.BytesIO(wav_file.read()))
@@ -64,7 +69,8 @@ if uploaded_zip:
                         x=df["Time (ms)"],
                         y=df["Amplitude"],
                         mode="lines",
-                        name=file
+                        name=file,
+                        line=dict(color=color_map[file])  # Use the consistent color
                     ))
 
                     # Frequency Domain (dB vs Frequency)
@@ -77,7 +83,8 @@ if uploaded_zip:
                         y=np.clip(db[freq_mask], min_db, max_db),
                         mode="lines",
                         fill='tozeroy',
-                        name=file
+                        name=file,
+                        line=dict(color=color_map[file])  # Use the consistent color
                     ))
 
             if selected_files:
