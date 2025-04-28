@@ -11,7 +11,7 @@ from sklearn.decomposition import PCA
 from tempfile import TemporaryDirectory
 
 st.set_page_config(layout="wide")
-st.title("🎧 Welding Sound Analyzer with Label Filtering")
+st.title("🎧 Welding Sound Analyzer V2 with Label Filtering")
 
 uploaded_zip = st.file_uploader("Upload a ZIP file containing WAV files", type="zip")
 
