@@ -17,7 +17,7 @@ import plotly.graph_objs as go
 from scipy.io import wavfile
 from tempfile import TemporaryDirectory
 
-st.title("WAV File Visualizer and CSV Exporter (10ms Resolution)")
+st.title("WAV File Visualizer V0 and CSV Exporter (10ms Resolution)")
 
 # Upload ZIP
 uploaded_zip = st.file_uploader("Upload a ZIP file containing WAV files", type="zip")
