@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from scipy.interpolate import interp1d
 
 st.set_page_config(layout="wide")
-st.title("🎧 Welding Sound Analyzer with Label Filtering")
+st.title("🎧 Welding Sound Analyzer V3 with Label Filtering")
 
 uploaded_zip = st.sidebar.file_uploader("Upload a ZIP file containing WAV files", type="zip")
 
